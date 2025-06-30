@@ -1,0 +1,1718 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Health Tracker App</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Custom CSS for animations -->
+    <style>
+        @keyframes fade-in {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes scale-in {
+            from { transform: scale(0.95); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        .animate-fade-in {
+            animation: fade-in 0.3s ease-out forwards;
+        }
+        .animate-scale-in {
+            animation: scale-in 0.3s ease-out forwards;
+        }
+        .chart-bar {
+            background-color: #8884d8;
+            height: 20px;
+            margin-bottom: 4px;
+            border-radius: 4px;
+            transition: width 0.5s ease-out;
+        }
+        .chart-limit-bar {
+            background-color: #82ca9d;
+            height: 20px;
+            margin-bottom: 4px;
+            border-radius: 4px;
+            transition: width 0.5s ease-out;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-100 font-sans text-gray-800 flex flex-col">
+
+    <!-- Header -->
+    <header class="bg-gradient-to-r from-blue-600 to-purple-700 text-white p-4 shadow-lg flex justify-between items-center rounded-b-xl">
+        <h1 class="text-3xl font-bold">Health Tracker</h1>
+        <div class="text-sm text-right">
+            <span id="userIdDisplay" class="block opacity-80">User ID: Loading...</span>
+            <span id="premiumStatus" class="text-gray-200">Free User</span>
+        </div>
+    </header>
+
+    <!-- Navigation -->
+    <nav class="bg-white shadow-md p-3 flex justify-around rounded-t-xl mx-2 mt-2">
+        <button id="navProfile" class="flex-1 py-2 px-4 text-center rounded-lg transition-all duration-300 mx-1 text-gray-700 hover:bg-gray-100 hover:text-blue-600">โปรไฟล์</button>
+        <button id="navBloodTest" class="flex-1 py-2 px-4 text-center rounded-lg transition-all duration-300 mx-1 text-gray-700 hover:bg-gray-100 hover:text-blue-600">ผลเลือด</button>
+        <button id="navFoodTracking" class="flex-1 py-2 px-4 text-center rounded-lg transition-all duration-300 mx-1 text-gray-700 hover:bg-gray-100 hover:text-blue-600">ติดตามอาหาร</button>
+        <button id="navHistory" class="flex-1 py-2 px-4 text-center rounded-lg transition-all duration-300 mx-1 text-gray-700 hover:bg-gray-100 hover:text-blue-600">ประวัติ</button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main id="mainContent" class="flex-1 p-4 overflow-y-auto">
+        <!-- Page content will be loaded here by JavaScript -->
+        <div id="loadingApp" class="min-h-screen flex items-center justify-center bg-gray-100 p-4">
+            <div class="text-center text-gray-700">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 mx-auto mb-4"></div>
+                <p class="text-lg">กำลังโหลดแอปพลิเคชัน...</p>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer for Premium -->
+    <footer id="premiumFooter" class="bg-gradient-to-r from-green-500 to-teal-600 text-white p-4 text-center rounded-t-xl mx-2 mb-2 shadow-lg">
+        <p class="mb-2 text-lg font-medium">ปลดล็อกเมนูและคุณสมบัติเพิ่มเติม!</p>
+        <button id="upgradePremiumBtn" class="bg-white text-green-700 font-bold py-2 px-6 rounded-full shadow-md hover:bg-gray-100 transition-transform transform hover:scale-105">
+            อัปเกรดเป็น Premium
+        </button>
+    </footer>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, query, addDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global app state
+        const appState = {
+            db: null,
+            auth: null,
+            userId: null,
+            appId: typeof __app_id !== 'undefined' ? __app_id : 'default-health-app',
+            initialAuthToken: typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null,
+            currentPage: 'profile',
+            profile: { height: '', weight: '', gender: '' },
+            bloodTests: {},
+            dailyMeals: [],
+            suggestedMenus: [],
+            message: '',
+            messageType: 'info',
+            isPremium: false,
+            showAddMealModal: false,
+            newMealName: '',
+            searchedMealNutrition: null,
+            isSearchingNutrition: false,
+            showNutritionDetailModal: false,
+            selectedMealForDetail: null,
+            selectedDayDetails: null, // For history modal
+            isLoading: true, // General loading for pages
+            isLoadingDailyMeals: true, // Specific for food tracking
+            isAnalyzingBloodTest: false, // Specific for blood test image analysis
+        };
+
+        // Nutritional guidelines (example values, can be adjusted)
+        const DAILY_NUTRIENT_LIMITS = {
+            calories: 2000,
+            carbohydrates: 250,
+            sugars: 50,
+            fiber: 30,
+            protein: 75,
+            totalFat: 60,
+            saturatedFat: 20,
+            unsaturatedFat: 40,
+            cholesterol: 300,
+            sodium: 2300,
+            potassium: 4700,
+            calcium: 1000,
+            magnesium: 400,
+        };
+
+        // Helper function to format date to YYYY-MM-DD
+        const formatDate = (date) => {
+            const d = new Date(date);
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        // --- Reusable UI Components ---
+
+        // Message Alert Component
+        const renderMessageAlert = () => {
+            if (!appState.message) return '';
+
+            let bgColor, borderColor, textColor;
+            switch (appState.messageType) {
+                case 'success':
+                    bgColor = 'bg-green-100';
+                    borderColor = 'border-green-400';
+                    textColor = 'text-green-700';
+                    break;
+                case 'error':
+                    bgColor = 'bg-red-100';
+                    borderColor = 'border-red-400';
+                    textColor = 'text-red-700';
+                    break;
+                case 'warning':
+                    bgColor = 'bg-yellow-100';
+                    borderColor = 'border-yellow-400';
+                    textColor = 'text-yellow-700';
+                    break;
+                default: // info
+                    bgColor = 'bg-blue-100';
+                    borderColor = 'border-blue-400';
+                    textColor = 'text-blue-700';
+            }
+
+            return `
+                <div class="${bgColor} ${borderColor} ${textColor} px-4 py-3 rounded-lg relative mb-4 shadow-sm" role="alert">
+                    <span class="block sm:inline">${appState.message}</span>
+                </div>
+            `;
+        };
+
+        // Custom Modal Component
+        const renderCustomModal = (title, contentHtml, onCloseCallback, isOpen) => {
+            if (!isOpen) return '';
+
+            return `
+                <div class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4 z-50 animate-fade-in" id="customModalOverlay">
+                    <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md transform scale-95 animate-scale-in">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-xl font-semibold text-blue-700">${title}</h3>
+                            <button
+                                id="customModalCloseBtn"
+                                class="text-gray-500 hover:text-gray-700 text-2xl leading-none"
+                                aria-label="ปิด"
+                            >
+                                &times;
+                            </button>
+                        </div>
+                        ${contentHtml}
+                    </div>
+                </div>
+            `;
+        };
+
+        // --- Page Rendering Functions ---
+
+        const mainContentDiv = document.getElementById('mainContent');
+
+        const updateUI = () => {
+            document.getElementById('userIdDisplay').textContent = `User ID: ${appState.userId ? appState.userId.substring(0, 8) + '...' : 'Loading...'}`;
+            document.getElementById('premiumStatus').className = appState.isPremium ? 'text-yellow-300 font-semibold' : 'text-gray-200';
+            document.getElementById('premiumStatus').textContent = appState.isPremium ? 'Premium User' : 'Free User';
+
+            const premiumFooter = document.getElementById('premiumFooter');
+            if (appState.isPremium) {
+                premiumFooter.classList.add('hidden');
+            } else {
+                premiumFooter.classList.remove('hidden');
+            }
+
+            // Update navigation active state
+            document.querySelectorAll('nav button').forEach(btn => {
+                btn.classList.remove('bg-blue-600', 'text-white', 'shadow-md', 'transform', 'scale-105');
+                btn.classList.add('text-gray-700', 'hover:bg-gray-100', 'hover:text-blue-600');
+            });
+            const activeNavButton = document.getElementById(`nav${appState.currentPage.charAt(0).toUpperCase() + appState.currentPage.slice(1)}`);
+            if (activeNavButton) {
+                activeNavButton.classList.add('bg-blue-600', 'text-white', 'shadow-md', 'transform', 'scale-105');
+                activeNavButton.classList.remove('text-gray-700', 'hover:bg-gray-100', 'hover:text-blue-600');
+            }
+
+            renderCurrentPage();
+        };
+
+        const renderCurrentPage = () => {
+            let pageHtml = '';
+            switch (appState.currentPage) {
+                case 'profile':
+                    pageHtml = renderProfilePage();
+                    break;
+                case 'bloodTest':
+                    pageHtml = renderBloodTestPage();
+                    break;
+                case 'foodTracking':
+                    pageHtml = renderFoodTrackingPage();
+                    break;
+                case 'history':
+                    pageHtml = renderHistoryPage();
+                    break;
+                default:
+                    pageHtml = `<p class="text-center text-gray-500">Page not found.</p>`;
+            }
+            mainContentDiv.innerHTML = pageHtml;
+            attachPageSpecificEventListeners();
+        };
+
+        // Attach event listeners after rendering each page
+        const attachPageSpecificEventListeners = () => {
+            // Profile Page Listeners
+            if (appState.currentPage === 'profile') {
+                const profileForm = document.getElementById('profileForm');
+                if (profileForm) {
+                    profileForm.onsubmit = handleSubmitProfile;
+                }
+                const editProfileBtn = document.getElementById('editProfileBtn');
+                if (editProfileBtn) {
+                    editProfileBtn.onclick = () => {
+                        appState.isEditing = true;
+                        updateUI();
+                    };
+                }
+            }
+            // Blood Test Page Listeners
+            else if (appState.currentPage === 'bloodTest') {
+                const bloodTestForm = document.getElementById('bloodTestForm');
+                if (bloodTestForm) {
+                    bloodTestForm.onsubmit = handleSubmitBloodTest;
+                }
+                const bloodTestDateInput = document.getElementById('bloodTestDate');
+                if (bloodTestDateInput) {
+                    bloodTestDateInput.onchange = handleDateChangeBloodTest;
+                }
+                const bloodTestUploadInput = document.getElementById('bloodTestUpload');
+                if (bloodTestUploadInput) {
+                    bloodTestUploadInput.onchange = handleImageUploadBloodTest;
+                }
+            }
+            // Food Tracking Page Listeners
+            else if (appState.currentPage === 'foodTracking') {
+                const foodDateInput = document.getElementById('foodDate');
+                if (foodDateInput) {
+                    foodDateInput.onchange = handleDateChangeFoodTracking;
+                }
+                document.getElementById('addMealManuallyBtn')?.addEventListener('click', () => {
+                    appState.showAddMealModal = true;
+                    appState.newMealName = '';
+                    appState.searchedMealNutrition = null;
+                    appState.message = ''; // Clear message for modal
+                    appState.messageType = 'info';
+                    updateUI();
+                });
+
+                // Attach listeners for suggested meals
+                document.querySelectorAll('.add-suggested-meal-btn').forEach(btn => {
+                    btn.onclick = (e) => handleAddMeal(JSON.parse(e.target.dataset.meal));
+                });
+
+                // Attach listeners for delete meals
+                document.querySelectorAll('.delete-meal-btn').forEach(btn => {
+                    btn.onclick = (e) => handleDeleteMeal(parseInt(e.target.dataset.index));
+                });
+
+                // Attach listeners for view nutrition details
+                document.querySelectorAll('.view-nutrition-detail-btn').forEach(btn => {
+                    btn.onclick = (e) => handleShowNutritionDetail(JSON.parse(e.target.dataset.meal));
+                });
+
+                // Add Meal Modal Listeners
+                if (appState.showAddMealModal) {
+                    document.getElementById('customModalCloseBtn').onclick = () => {
+                        appState.showAddMealModal = false;
+                        appState.newMealName = '';
+                        appState.searchedMealNutrition = null;
+                        appState.message = '';
+                        appState.messageType = 'info';
+                        updateUI();
+                    };
+                    document.getElementById('newMealNameInput').oninput = (e) => {
+                        appState.newMealName = e.target.value;
+                        updateUI(); // Re-render to update input value
+                    };
+                    document.getElementById('searchNutritionBtn').onclick = handleSearchNutrition;
+                    document.getElementById('addManualMealBtn').onclick = handleManualAddMealWithSearchedData;
+                    document.getElementById('cancelAddManualMealBtn').onclick = () => {
+                        appState.showAddMealModal = false;
+                        appState.newMealName = '';
+                        appState.searchedMealNutrition = null;
+                        appState.message = '';
+                        appState.messageType = 'info';
+                        updateUI();
+                    };
+                }
+
+                // Nutrition Detail Modal Listeners
+                if (appState.showNutritionDetailModal) {
+                    document.getElementById('customModalCloseBtn').onclick = () => {
+                        appState.showNutritionDetailModal = false;
+                        appState.selectedMealForDetail = null;
+                        updateUI();
+                    };
+                }
+            }
+            // History Page Listeners
+            else if (appState.currentPage === 'history') {
+                document.querySelectorAll('.view-day-details-btn').forEach(btn => {
+                    btn.onclick = (e) => handleShowDayDetails(JSON.parse(e.target.dataset.log));
+                });
+
+                if (appState.selectedDayDetails) {
+                    document.getElementById('customModalCloseBtn').onclick = () => {
+                        appState.selectedDayDetails = null;
+                        updateUI();
+                    };
+                }
+            }
+        };
+
+        const renderProfilePage = () => {
+            if (appState.isLoading) {
+                return `
+                    <div class="flex items-center justify-center h-48">
+                        <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500"></div>
+                        <p class="ml-3 text-blue-600">กำลังโหลดโปรไฟล์...</p>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                    <h2 class="text-2xl font-semibold mb-6 text-center text-blue-700">ข้อมูลโปรไฟล์ส่วนตัว</h2>
+                    ${renderMessageAlert()}
+                    ${!appState.isEditing && appState.profile.height && appState.profile.weight && appState.profile.gender ? `
+                        <div class="text-lg text-gray-700 space-y-3">
+                            <p><span class="font-medium text-blue-800">ส่วนสูง:</span> ${appState.profile.height} ซม.</p>
+                            <p><span class="font-medium text-blue-800">น้ำหนัก:</span> ${appState.profile.weight} กก.</p>
+                            <p><span class="font-medium text-blue-800">เพศ:</span> ${appState.profile.gender === 'male' ? 'ชาย' : 'หญิง'}</p>
+                            <button id="editProfileBtn" class="w-full mt-6 bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-200 transform hover:scale-105">
+                                แก้ไขโปรไฟล์
+                            </button>
+                        </div>
+                    ` : `
+                        <form id="profileForm" class="space-y-5">
+                            <div>
+                                <label for="height" class="block text-sm font-medium text-gray-700 mb-1">
+                                    ส่วนสูง (ซม.): <span class="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="number"
+                                    id="height"
+                                    name="height"
+                                    value="${appState.profile.height}"
+                                    oninput="appState.profile.height = this.value; updateUI();"
+                                    placeholder="เช่น 170"
+                                    required
+                                    class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-all duration-200"
+                                />
+                            </div>
+                            <div>
+                                <label for="weight" class="block text-sm font-medium text-gray-700 mb-1">
+                                    น้ำหนัก (กก.): <span class="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="number"
+                                    id="weight"
+                                    name="weight"
+                                    value="${appState.profile.weight}"
+                                    oninput="appState.profile.weight = this.value; updateUI();"
+                                    placeholder="เช่น 65"
+                                    required
+                                    class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-all duration-200"
+                                />
+                            </div>
+                            <div>
+                                <label for="gender" class="block text-sm font-medium text-gray-700 mb-1">
+                                    เพศ: <span class="text-red-500">*</span>
+                                </label>
+                                <select
+                                    id="gender"
+                                    name="gender"
+                                    value="${appState.profile.gender}"
+                                    onchange="appState.profile.gender = this.value; updateUI();"
+                                    required
+                                    class="mt-1 block w-full px-3 py-2 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-all duration-200"
+                                >
+                                    <option value="">เลือกเพศ</option>
+                                    <option value="male">ชาย</option>
+                                    <option value="female">หญิง</option>
+                                </select>
+                            </div>
+                            <button
+                                type="submit"
+                                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-200 transform hover:scale-105"
+                            >
+                                บันทึกโปรไฟล์
+                            </button>
+                        </form>
+                    `}
+                </div>
+            `;
+        };
+
+        const renderBloodTestPage = () => {
+            const bloodTestFields = [
+                { id: 'fbs', label: 'Fasting Blood Sugar (FBS)', unit: 'mg/dL', group: 'น้ำตาลในเลือด' },
+                { id: 'hba1c', label: 'HbA1c', unit: '%', group: 'น้ำตาลในเลือด' },
+                { id: 'rbs', label: 'Random Blood Sugar (RBS)', unit: 'mg/dL', group: 'น้ำตาลในเลือด' },
+                { id: 'totalCholesterol', label: 'Cholesterol รวม (Total Cholesterol)', unit: 'mg/dL', group: 'ไขมันในเลือด' },
+                { id: 'ldl', label: 'LDL', unit: 'mg/dL', group: 'ไขมันในเลือด' },
+                { id: 'hdl', label: 'HDL', unit: 'mg/dL', group: 'ไขมันในเลือด' },
+                { id: 'triglycerides', label: 'Triglycerides', unit: 'mg/dL', group: 'ไขมันในเลือด' },
+                { id: 'creatinine', label: 'Creatinine', unit: 'mg/dL', group: 'การทำงานของไต' },
+                { id: 'egfr', label: 'eGFR', unit: 'mL/min/1.73m²', group: 'การทำงานของไต' },
+                { id: 'microalbuminuria', label: 'Microalbuminuria / Albumin-to-Creatinine Ratio', unit: 'mg/g', group: 'การทำงานของไต' },
+                { id: 'systolicBp', label: 'ความดันโลหิต (Systolic)', unit: 'mmHg', group: 'ความดันโลหิต' },
+                { id: 'diastolicBp', label: 'ความดันโลหิต (Diastolic)', unit: 'mmHg', group: 'ความดันโลหิต' },
+                { id: 'potassium', label: 'Potassium', unit: 'mmol/L', group: 'เกลือแร่ในเลือด' },
+                { id: 'sodium', label: 'Sodium', unit: 'mmol/L', group: 'เกลือแร่ในเลือด' },
+                { id: 'uricAcid', label: 'Uric Acid', unit: 'mg/dL', group: 'อื่นๆ' },
+                { id: 'hscrp', label: 'hs-CRP (optional)', unit: 'mg/L', group: 'อื่นๆ' },
+                { id: 'troponin', label: 'Troponin (optional)', unit: 'ng/mL', group: 'อื่นๆ' },
+            ];
+
+            const groupedFields = bloodTestFields.reduce((acc, field) => {
+                (acc[field.group] = acc[field.group] || []).push(field);
+                return acc;
+            }, {});
+
+            if (appState.isLoading) {
+                return `
+                    <div class="flex items-center justify-center h-48">
+                        <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500"></div>
+                        <p class="ml-3 text-blue-600">กำลังโหลดผลเลือด...</p>
+                    </div>
+                `;
+            }
+
+            let fieldsHtml = '';
+            for (const groupName in groupedFields) {
+                fieldsHtml += `
+                    <div class="border border-gray-200 rounded-lg p-4 shadow-sm bg-gray-50">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-3 border-b pb-2 border-gray-200">${groupName}</h3>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                `;
+                groupedFields[groupName].forEach(field => {
+                    fieldsHtml += `
+                        <div>
+                            <label for="${field.id}" class="block text-sm font-medium text-gray-700 mb-1">
+                                ${field.label} (${field.unit}):
+                            </label>
+                            <input
+                                type="number"
+                                id="${field.id}"
+                                name="${field.id}"
+                                value="${appState.bloodTests[field.id] || ''}"
+                                oninput="appState.bloodTests['${field.id}'] = this.value;"
+                                step="any"
+                                placeholder="ป้อนค่า ${field.label}"
+                                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-all duration-200"
+                            />
+                        </div>
+                    `;
+                });
+                fieldsHtml += `
+                        </div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                    <h2 class="text-2xl font-semibold mb-6 text-center text-blue-700">บันทึกผลเลือด</h2>
+                    ${renderMessageAlert()}
+
+                    <div class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                        <label for="bloodTestDate" class="block text-sm font-medium text-blue-800 mb-2">
+                            เลือกวันที่:
+                        </label>
+                        <input
+                            type="date"
+                            id="bloodTestDate"
+                            value="${appState.selectedDate}"
+                            class="mt-1 block w-full px-3 py-2 border border-blue-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-all duration-200"
+                        />
+                    </div>
+
+                    <div class="mb-6 p-4 bg-purple-50 rounded-lg border border-purple-200">
+                        <label for="bloodTestUpload" class="block text-sm font-medium text-purple-800 mb-2">
+                            อัปโหลดผลเลือด (รูปภาพ):
+                        </label>
+                        <input
+                            type="file"
+                            id="bloodTestUpload"
+                            accept="image/*"
+                            ${appState.isAnalyzingBloodTest ? 'disabled' : ''}
+                            class="mt-1 block w-full text-sm text-gray-500
+                                file:mr-4 file:py-2 file:px-4
+                                file:rounded-full file:border-0
+                                file:text-sm file:font-semibold
+                                file:bg-purple-100 file:text-purple-700
+                                hover:file:bg-purple-200 transition-colors duration-200"
+                        />
+                        ${appState.isAnalyzingBloodTest ? `
+                            <p class="text-purple-600 text-sm mt-2 flex items-center">
+                                <span class="animate-spin rounded-full h-4 w-4 border-b-2 border-purple-600 mr-2"></span>
+                                กำลังวิเคราะห์... โปรดรอสักครู่
+                            </p>
+                        ` : ''}
+                        <p class="text-xs text-gray-500 mt-1">
+                            *การวิเคราะห์ผลจากรูปภาพอาจไม่สมบูรณ์ กรุณาตรวจสอบและแก้ไขข้อมูลที่กรอกอัตโนมัติ
+                        </p>
+                    </div>
+
+                    <form id="bloodTestForm" class="space-y-6">
+                        ${fieldsHtml}
+                        <button
+                            type="submit"
+                            class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg shadow-md transition-all duration-200 transform hover:scale-105 text-lg"
+                        >
+                            บันทึกผลเลือด
+                        </button>
+                    </form>
+                </div>
+            `;
+        };
+
+        const renderFoodTrackingPage = () => {
+            const freeSuggestedMenus = appState.suggestedMenus.slice(0, 3);
+            const premiumSuggestedMenus = appState.suggestedMenus.slice(3);
+
+            let dailyMealsListHtml = '';
+            if (appState.isLoadingDailyMeals) {
+                dailyMealsListHtml = `
+                    <p class="text-blue-600 text-sm mt-2 flex items-center justify-center py-4">
+                        <span class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2"></span>
+                        กำลังโหลดอาหารที่กินวันนี้...
+                    </p>
+                `;
+            } else if (appState.dailyMeals.length === 0) {
+                dailyMealsListHtml = `
+                    <p class="text-gray-500 text-center py-4">ยังไม่มีอาหารสำหรับวันนี้ เริ่มต้นเพิ่มอาหารของคุณเลย!</p>
+                `;
+            } else {
+                dailyMealsListHtml = `
+                    <ul class="space-y-3">
+                        ${appState.dailyMeals.map((meal, index) => `
+                            <li class="bg-gray-50 p-3 rounded-lg border border-gray-200 flex justify-between items-center shadow-sm hover:shadow-md transition-shadow duration-200">
+                                <div>
+                                    <p class="font-semibold text-gray-800">${meal.recipeName}</p>
+                                    <p class="text-sm text-gray-600">แคลอรี่: ${meal.nutrition.calories} kcal</p>
+                                    <button
+                                        data-meal='${JSON.stringify(meal)}'
+                                        class="text-blue-500 text-xs hover:underline mt-1 view-nutrition-detail-btn"
+                                    >
+                                        ดูรายละเอียดโภชนาการ
+                                    </button>
+                                </div>
+                                <button
+                                    data-index="${index}"
+                                    class="bg-red-500 hover:bg-red-600 text-white text-sm py-1.5 px-3 rounded-md shadow-sm hover:shadow-md transition-all duration-200 delete-meal-btn"
+                                >
+                                    ลบ
+                                </button>
+                            </li>
+                        `).join('')}
+                    </ul>
+                `;
+            }
+
+            let chartBarsHtml = '';
+            const dailyNutrientTotals = calculateDailyNutrients();
+            const chartData = Object.keys(DAILY_NUTRIENT_LIMITS).map(key => ({
+                name: key.charAt(0).toUpperCase() + key.slice(1),
+                Consumed: dailyNutrientTotals[key],
+                Limit: DAILY_NUTRIENT_LIMITS[key],
+            }));
+
+            chartData.forEach(data => {
+                const consumedWidth = (data.Consumed / data.Limit) * 100; // Percentage of limit
+                chartBarsHtml += `
+                    <div class="mb-4">
+                        <p class="text-sm font-medium text-gray-700 mb-1">${data.name}: ${data.Consumed.toFixed(0)} / ${data.Limit.toFixed(0)}</p>
+                        <div class="w-full bg-gray-200 rounded-full h-5">
+                            <div class="chart-bar" style="width: ${Math.min(100, consumedWidth)}%;"></div>
+                        </div>
+                    </div>
+                `;
+            });
+
+
+            return `
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                    <h2 class="text-2xl font-semibold mb-6 text-center text-blue-700">ติดตามอาหาร</h2>
+                    ${renderMessageAlert()}
+
+                    <div class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                        <label for="foodDate" class="block text-sm font-medium text-blue-800 mb-2">
+                            เลือกวันที่:
+                        </label>
+                        <input
+                            type="date"
+                            id="foodDate"
+                            value="${appState.selectedDate}"
+                            class="mt-1 block w-full px-3 py-2 border border-blue-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-all duration-200"
+                        />
+                    </div>
+
+                    <div class="mb-6">
+                        <h3 class="text-xl font-medium mb-4 text-blue-600">เมนูที่แนะนำสำหรับคุณ</h3>
+                        ${appState.loadingSuggestions ? `
+                            <p class="text-blue-600 text-sm mt-2 flex items-center justify-center py-4">
+                                <span class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2"></span>
+                                กำลังสร้างข้อเสนอแนะเมนู...
+                            </p>
+                        ` : appState.suggestedMenus.length === 0 ? `
+                            <p class="text-gray-500 text-center py-4">ไม่สามารถสร้างข้อเสนอแนะเมนูได้ในขณะนี้</p>
+                        ` : `
+                            <div class="mt-4 space-y-3">
+                                ${freeSuggestedMenus.map((menu, index) => `
+                                    <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 flex justify-between items-center shadow-sm hover:shadow-md transition-shadow duration-200">
+                                        <div>
+                                            <p class="font-semibold text-gray-800">${menu.recipeName}</p>
+                                            <p class="text-sm text-gray-600">แคลอรี่: ${menu.nutrition.calories} kcal</p>
+                                        </div>
+                                        <button
+                                            data-meal='${JSON.stringify(meal)}'
+                                            class="bg-blue-500 hover:bg-blue-600 text-white text-sm py-1.5 px-4 rounded-md shadow-sm hover:shadow-md transition-all duration-200 add-suggested-meal-btn"
+                                        >
+                                            เพิ่ม
+                                        </button>
+                                    </div>
+                                `).join('')}
+                                ${premiumSuggestedMenus.length > 0 ? `
+                                    <div class="mt-4 pt-4 border-t border-gray-200">
+                                        <h4 class="text-lg font-medium text-purple-600 mb-3">เมนูเพิ่มเติม (Premium)</h4>
+                                        ${!appState.isPremium ? `
+                                            <div class="bg-yellow-50 border border-yellow-200 p-4 rounded-lg text-yellow-800 text-center shadow-inner">
+                                                อัปเกรดเป็น Premium เพื่อดูเมนูเพิ่มเติมและคุณสมบัติพิเศษ!
+                                            </div>
+                                        ` : `
+                                            ${premiumSuggestedMenus.map((menu, index) => `
+                                                <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 flex justify-between items-center mb-2 shadow-sm hover:shadow-md transition-shadow duration-200">
+                                                    <div>
+                                                        <p class="font-semibold text-gray-800">${menu.recipeName}</p>
+                                                        <p class="text-sm text-gray-600">แคลอรี่: ${menu.nutrition.calories} kcal</p>
+                                                    </div>
+                                                    <button
+                                                        data-meal='${JSON.stringify(meal)}'
+                                                        class="bg-blue-500 hover:bg-blue-600 text-white text-sm py-1.5 px-4 rounded-md shadow-sm hover:shadow-md transition-all duration-200 add-suggested-meal-btn"
+                                                    >
+                                                        เพิ่ม
+                                                    </button>
+                                                </div>
+                                            `).join('')}
+                                        `}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `}
+                    </div>
+
+                    <div class="mb-6">
+                        <h3 class="text-xl font-medium mb-4 text-blue-600">อาหารที่กินวันนี้ (${appState.selectedDate})</h3>
+                        ${dailyMealsListHtml}
+                        <button
+                            id="addMealManuallyBtn"
+                            class="w-full mt-6 bg-purple-500 hover:bg-purple-600 text-white font-bold py-3 px-4 rounded-lg shadow-md transition-all duration-200 transform hover:scale-105 text-lg"
+                        >
+                            เพิ่มอาหารเอง
+                        </button>
+                    </div>
+
+                    <div class="mb-6">
+                        <h3 class="text-xl font-medium mb-4 text-blue-600">สรุปสารอาหารวันนี้</h3>
+                        <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            ${chartBarsHtml}
+                        </div>
+                    </div>
+
+                    ${renderCustomModal(
+                        "เพิ่มอาหารเอง",
+                        `
+                            <div class="space-y-4">
+                                <div>
+                                    <label for="newMealNameInput" class="block text-sm font-medium text-gray-700 mb-1">
+                                        ชื่อเมนู:
+                                    </label>
+                                    <input
+                                        type="text"
+                                        id="newMealNameInput"
+                                        value="${appState.newMealName}"
+                                        class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                                        placeholder="เช่น ข้าวผัดไก่"
+                                    />
+                                </div>
+                                <button
+                                    id="searchNutritionBtn"
+                                    ${appState.isSearchingNutrition ? 'disabled' : ''}
+                                    class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                                >
+                                    ${appState.isSearchingNutrition ? `
+                                        <span class="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></span>
+                                        กำลังค้นหา...
+                                    ` : 'ค้นหาข้อมูลโภชนาการ'}
+                                </button>
+
+                                ${appState.searchedMealNutrition ? `
+                                    <div class="mt-4 p-3 bg-gray-100 rounded-md border border-gray-200">
+                                        <h4 class="font-medium text-gray-800 mb-2">ข้อมูลโภชนาการที่พบ:</h4>
+                                        <ul class="text-sm text-gray-700 space-y-1">
+                                            ${Object.keys(DAILY_NUTRIENT_LIMITS).map(key => `
+                                                <li>
+                                                    <span class="font-semibold">${key.charAt(0).toUpperCase() + key.slice(1)}:</span>
+                                                    ${appState.searchedMealNutrition[key] !== null ? appState.searchedMealNutrition[key] : 'N/A'}
+                                                </li>
+                                            `).join('')}
+                                        </ul>
+                                    </div>
+                                ` : ''}
+                                ${renderMessageAlert()}
+                            </div>
+                            <div class="mt-6 flex justify-end space-x-3">
+                                <button
+                                    id="cancelAddManualMealBtn"
+                                    class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-200"
+                                >
+                                    ยกเลิก
+                                </button>
+                                <button
+                                    id="addManualMealBtn"
+                                    ${!appState.searchedMealNutrition ? 'disabled' : ''}
+                                    class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    เพิ่ม
+                                </button>
+                            </div>
+                        `,
+                        () => { appState.showAddMealModal = false; updateUI(); },
+                        appState.showAddMealModal
+                    )}
+
+                    ${renderCustomModal(
+                        `รายละเอียดโภชนาการของ ${appState.selectedMealForDetail?.recipeName || ''}`,
+                        `
+                            <div class="space-y-2 text-gray-700">
+                                ${appState.selectedMealForDetail && Object.keys(DAILY_NUTRIENT_LIMITS).map(key => `
+                                    <p>
+                                        <span class="font-medium">${key.charAt(0).toUpperCase() + key.slice(1)}:</span>
+                                        ${appState.selectedMealForDetail.nutrition[key] !== null ? `${appState.selectedMealForDetail.nutrition[key]} ${
+                                            key === 'calories' ? 'kcal' : (key.includes('fat') || key.includes('carbohydrates') || key.includes('protein') || key.includes('fiber') || key.includes('sugars') ? 'g' : 'mg')
+                                        }` : 'N/A'}
+                                    </p>
+                                `).join('')}
+                            </div>
+                            <div class="mt-6 flex justify-end">
+                                <button
+                                    id="customModalCloseBtn"
+                                    class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-200 transform hover:scale-105"
+                                >
+                                    ปิด
+                                </button>
+                            </div>
+                        `,
+                        () => { appState.showNutritionDetailModal = false; updateUI(); },
+                        appState.showNutritionDetailModal
+                    )}
+                </div>
+            `;
+        };
+
+        const renderHistoryPage = () => {
+            let chartHtml = '';
+            if (appState.foodLogs.length === 0) {
+                chartHtml = `<p class="text-gray-500 text-center py-4">ไม่มีข้อมูลสำหรับแสดงกราฟ</p>`;
+            } else {
+                // Simplified line chart representation using text
+                const monthlyChartData = appState.foodLogs.map(log => ({
+                    date: log.date,
+                    calories: log.dailyTotals.calories || 0,
+                    protein: log.dailyTotals.protein || 0,
+                    fat: log.dailyTotals.totalFat || 0,
+                    carbs: log.dailyTotals.carbohydrates || 0,
+                })).reverse(); // Reverse to show chronological order for chart
+
+                chartHtml = `
+                    <div class="space-y-2">
+                        <p class="font-semibold text-gray-700">พลังงาน (kcal) ย้อนหลัง 7 วัน:</p>
+                        <ul class="list-disc list-inside ml-4">
+                            ${monthlyChartData.slice(-7).map(data => `
+                                <li>${data.date}: ${data.calories.toFixed(0)} kcal</li>
+                            `).join('')}
+                        </ul>
+                        <p class="text-sm text-gray-500 mt-2">*กราฟนี้เป็นเพียงการแสดงข้อมูลอย่างง่าย</p>
+                    </div>
+                `;
+            }
+
+            let dailySummaryListHtml = '';
+            if (appState.foodLogs.length === 0) {
+                dailySummaryListHtml = `<p class="text-gray-500 text-center py-4">ยังไม่มีประวัติการกินอาหาร</p>`;
+            } else {
+                dailySummaryListHtml = `
+                    <ul class="space-y-3">
+                        ${appState.foodLogs.map((log) => {
+                            const getStatusColor = (status) => {
+                                switch (status) {
+                                    case 'ได้รับสารอาหารเกิน': return 'bg-red-100 text-red-800';
+                                    case 'ได้รับสารอาหารน้อยเกินไป': return 'bg-yellow-100 text-yellow-800';
+                                    case 'ปกติ': return 'bg-green-100 text-green-800';
+                                    default: return 'bg-gray-100 text-gray-800';
+                                }
+                            };
+                            return `
+                                <li class="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center shadow-sm hover:shadow-md transition-shadow duration-200">
+                                    <div>
+                                        <p class="font-semibold text-gray-800">${log.date}</p>
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(log.status)}">
+                                            ${log.status}
+                                        </span>
+                                    </div>
+                                    <button
+                                        data-log='${JSON.stringify(log)}'
+                                        class="bg-blue-500 hover:bg-blue-600 text-white text-sm py-1.5 px-3 rounded-md shadow-sm hover:shadow-md transition-all duration-200 view-day-details-btn"
+                                    >
+                                        ดูรายละเอียด
+                                    </button>
+                                </li>
+                            `;
+                        }).join('')}
+                    </ul>
+                `;
+            }
+
+            return `
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                    <h2 class="text-2xl font-semibold mb-6 text-center text-blue-700">ประวัติและกราฟติดตาม</h2>
+                    ${renderMessageAlert()}
+
+                    <div class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                        <h3 class="text-xl font-medium mb-3 text-blue-600">กราฟสารอาหารรายวัน (ย้อนหลัง)</h3>
+                        ${chartHtml}
+                    </div>
+
+                    <div class="mb-6 p-4 bg-green-50 rounded-lg border border-green-200">
+                        <h3 class="text-xl font-medium mb-3 text-blue-600">สรุปการกินอาหารรายวัน</h3>
+                        ${dailySummaryListHtml}
+                    </div>
+
+                    ${renderCustomModal(
+                        `รายละเอียดอาหารวันที่ ${appState.selectedDayDetails?.date || ''}`,
+                        `
+                            <div class="space-y-3 mb-4">
+                                <p class="font-medium text-gray-800">สถานะ: <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(appState.selectedDayDetails?.status || 'ปกติ')}">
+                                    ${appState.selectedDayDetails?.status || 'ปกติ'}
+                                </span></p>
+                                <h4 class="font-medium text-gray-800 mt-4">อาหารที่กิน:</h4>
+                                <ul class="list-disc list-inside ml-4">
+                                    ${appState.selectedDayDetails?.meals.length === 0 ? `
+                                        <p class="text-gray-500">ไม่มีอาหารบันทึกไว้</p>
+                                    ` : `
+                                        ${appState.selectedDayDetails?.meals.map((meal, index) => `
+                                            <li key="${index}" class="text-gray-700">${meal.recipeName} (${meal.nutrition.calories} kcal)</li>
+                                        `).join('')}
+                                    `}
+                                </ul>
+                                <h4 class="font-medium text-gray-800 mt-4">สรุปสารอาหาร:</h4>
+                                <ul class="list-disc list-inside ml-4">
+                                    ${appState.selectedDayDetails && Object.keys(appState.selectedDayDetails.dailyTotals).map(key => `
+                                        <li key="${key}" class="text-gray-700">
+                                            ${key.charAt(0).toUpperCase() + key.slice(1)}: ${appState.selectedDayDetails.dailyTotals[key].toFixed(2)}
+                                        </li>
+                                    `).join('')}
+                                </ul>
+                            </div>
+                            <div class="flex justify-end">
+                                <button
+                                    id="customModalCloseBtn"
+                                    class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-200 transform hover:scale-105"
+                                >
+                                    ปิด
+                                </button>
+                            </div>
+                        `,
+                        () => { appState.selectedDayDetails = null; updateUI(); },
+                        appState.selectedDayDetails !== null
+                    )}
+                </div>
+            `;
+        };
+
+
+        // --- Event Handlers (Global Scope) ---
+
+        const handleSubmitProfile = async (e) => {
+            e.preventDefault();
+            if (!appState.db || !appState.userId) {
+                appState.message = "ไม่สามารถบันทึกได้: ผู้ใช้ไม่ได้เข้าสู่ระบบ";
+                appState.messageType = 'error';
+                updateUI();
+                return;
+            }
+            if (!appState.profile.height || !appState.profile.weight || !appState.profile.gender) {
+                appState.message = "กรุณากรอกข้อมูลส่วนสูง น้ำหนัก และเพศให้ครบถ้วน";
+                appState.messageType = 'warning';
+                updateUI();
+                return;
+            }
+
+            try {
+                const docRef = doc(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/profile`, 'userProfile');
+                await setDoc(docRef, appState.profile, { merge: true });
+                appState.message = "บันทึกโปรไฟล์เรียบร้อยแล้ว!";
+                appState.messageType = 'success';
+                appState.isEditing = false;
+            } catch (error) {
+                console.error("Error saving profile:", error);
+                appState.message = "เกิดข้อผิดพลาดในการบันทึกโปรไฟล์";
+                appState.messageType = 'error';
+            } finally {
+                updateUI();
+            }
+        };
+
+        const handleSubmitBloodTest = async (e) => {
+            e.preventDefault();
+            if (!appState.db || !appState.userId) {
+                appState.message = "ไม่สามารถบันทึกได้: ผู้ใช้ไม่ได้เข้าสู่ระบบ";
+                appState.messageType = 'error';
+                updateUI();
+                return;
+            }
+
+            try {
+                const docRef = doc(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/bloodTests`, appState.selectedDate);
+                await setDoc(docRef, appState.bloodTests, { merge: true });
+                appState.message = "บันทึกผลเลือดเรียบร้อยแล้ว!";
+                appState.messageType = 'success';
+            } catch (error) {
+                console.error("Error saving blood tests:", error);
+                appState.message = "เกิดข้อผิดพลาดในการบันทึกผลเลือด";
+                appState.messageType = 'error';
+            } finally {
+                updateUI();
+            }
+        };
+
+        const handleDateChangeBloodTest = (e) => {
+            appState.selectedDate = e.target.value;
+            appState.isLoading = true; // Indicate loading for new date
+            updateUI(); // Re-render to show loading state
+            // Re-fetch data for the new date
+            const docRef = doc(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/bloodTests`, appState.selectedDate);
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    appState.bloodTests = docSnap.data();
+                } else {
+                    appState.bloodTests = {};
+                }
+                appState.isLoading = false;
+                updateUI();
+            }, (error) => {
+                console.error("Error fetching blood tests:", error);
+                appState.message = "เกิดข้อผิดพลาดในการโหลดผลเลือด";
+                appState.messageType = 'error';
+                appState.isLoading = false;
+                updateUI();
+            });
+        };
+
+        const handleImageUploadBloodTest = async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            appState.isAnalyzingBloodTest = true;
+            appState.message = 'กำลังวิเคราะห์ผลเลือดจากรูปภาพ...';
+            appState.messageType = 'info';
+            updateUI();
+
+            const reader = new FileReader();
+            reader.onloadend = async () => {
+                const base64ImageData = reader.result.split(',')[1];
+
+                const prompt = `
+                    โปรดวิเคราะห์รูปภาพผลเลือดนี้และดึงค่าการตรวจเลือดต่อไปนี้ออกมาในรูปแบบ JSON Object:
+                    - Fasting Blood Sugar (FBS)
+                    - HbA1c
+                    - Random Blood Sugar (RBS)
+                    - Creatinine
+                    - eGFR
+                    - Microalbuminuria / Albumin-to-Creatinine Ratio
+                    - Cholesterol รวม (Total Cholesterol)
+                    - LDL
+                    - HDL
+                    - Triglycerides
+                    - Systolic Blood Pressure (ความดันโลหิต Systolic)
+                    - Diastolic Blood Pressure (ความดันโลหิต Diastolic)
+                    - Potassium
+                    - Sodium
+                    - Uric Acid
+                    - hs-CRP
+                    - Troponin
+
+                    สำหรับแต่ละค่า ให้ระบุเฉพาะตัวเลขเท่านั้น (ไม่รวมหน่วย) หากไม่พบค่าใดๆ ให้ระบุเป็น null
+                    ตัวอย่างรูปแบบ JSON:
+                    {
+                      "fbs": 95,
+                      "hba1c": 6.2,
+                      "rbs": null,
+                      "creatinine": 0.8,
+                      "egfr": 90,
+                      "microalbuminuria": null,
+                      "totalCholesterol": 180,
+                      "ldl": 100,
+                      "hdl": 50,
+                      "triglycerides": 120,
+                      "systolicBp": 120,
+                      "diastolicBp": 80,
+                      "potassium": 4.0,
+                      "sodium": 140,
+                      "uricAcid": 5.5,
+                      "hscrp": null,
+                      "troponin": null
+                    }
+                `;
+
+                try {
+                    const chatHistory = [];
+                    chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+                    const payload = {
+                        contents: [
+                            {
+                                role: "user",
+                                parts: [
+                                    { text: prompt },
+                                    {
+                                        inlineData: {
+                                            mimeType: file.type,
+                                            data: base64ImageData
+                                        }
+                                    }
+                                ]
+                            }
+                        ],
+                        generationConfig: {
+                            responseMimeType: "application/json",
+                            responseSchema: {
+                                type: "OBJECT",
+                                properties: {
+                                    "fbs": { "type": ["number", "null"] },
+                                    "hba1c": { "type": ["number", "null"] },
+                                    "rbs": { "type": ["number", "null"] },
+                                    "creatinine": { "type": ["number", "null"] },
+                                    "egfr": { "type": ["number", "null"] },
+                                    "microalbuminuria": { "type": ["number", "null"] },
+                                    "totalCholesterol": { "type": ["number", "null"] },
+                                    "ldl": { "type": ["number", "null"] },
+                                    "hdl": { "type": ["number", "null"] },
+                                    "triglycerides": { "type": ["number", "null"] },
+                                    "systolicBp": { "type": ["number", "null"] },
+                                    "diastolicBp": { "type": ["number", "null"] },
+                                    "potassium": { "type": ["number", "null"] },
+                                    "sodium": { "type": ["number", "null"] },
+                                    "uricAcid": { "type": ["number", "null"] },
+                                    "hscrp": { "type": ["number", "null"] },
+                                    "troponin": { "type": ["number", "null"] }
+                                }
+                            }
+                        }
+                    };
+
+                    const apiKey = "";
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+                    const response = await fetch(apiUrl, {
+                               method: 'POST',
+                               headers: { 'Content-Type': 'application/json' },
+                               body: JSON.stringify(payload)
+                           });
+                    const result = await response.json();
+
+                    if (result.candidates && result.candidates.length > 0 &&
+                        result.candidates[0].content && result.candidates[0].content.parts &&
+                        result.candidates[0].content.parts.length > 0) {
+                      const jsonText = result.candidates[0].content.parts[0].text;
+                      const parsedData = JSON.parse(jsonText);
+                      const newBloodTests = {};
+                      for (const key in parsedData) {
+                        newBloodTests[key] = parsedData[key] !== null ? parsedData[key] : '';
+                      }
+                      appState.bloodTests = { ...appState.bloodTests, ...newBloodTests };
+                      appState.message = "วิเคราะห์ผลเลือดจากรูปภาพและกรอกข้อมูลเรียบร้อยแล้ว!";
+                      appState.messageType = 'success';
+                    } else {
+                      appState.message = "ไม่สามารถวิเคราะห์ผลเลือดจากรูปภาพได้";
+                      appState.messageType = 'error';
+                    }
+                } catch (error) {
+                    console.error("Error analyzing blood test image:", error);
+                    appState.message = "เกิดข้อผิดพลาดในการวิเคราะห์รูปภาพ";
+                    appState.messageType = 'error';
+                } finally {
+                    appState.isAnalyzingBloodTest = false;
+                    updateUI();
+                }
+            };
+            reader.readAsDataURL(file);
+        };
+
+        const handleDateChangeFoodTracking = (e) => {
+            appState.selectedDate = e.target.value;
+            appState.isLoadingDailyMeals = true; // Indicate loading for new date
+            updateUI(); // Re-render to show loading state
+            // Re-fetch data for the new date
+            const docRef = doc(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/foodLogs`, appState.selectedDate);
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    appState.dailyMeals = docSnap.data().meals || [];
+                } else {
+                    appState.dailyMeals = [];
+                }
+                appState.isLoadingDailyMeals = false;
+                updateUI();
+            }, (error) => {
+                console.error("Error fetching daily meals:", error);
+                appState.message = "เกิดข้อผิดพลาดในการโหลดข้อมูลอาหาร";
+                appState.messageType = 'error';
+                appState.isLoadingDailyMeals = false;
+                updateUI();
+            });
+        };
+
+        const handleAddMeal = async (meal) => {
+            if (!appState.db || !appState.userId) {
+                appState.message = "ไม่สามารถบันทึกได้: ผู้ใช้ไม่ได้เข้าสู่ระบบ";
+                appState.messageType = 'error';
+                updateUI();
+                return;
+            }
+            try {
+                const docRef = doc(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/foodLogs`, appState.selectedDate);
+                const currentMeals = appState.dailyMeals || [];
+                const updatedMeals = [...currentMeals, meal];
+                const newDailyTotals = updatedMeals.reduce((acc, currentMeal) => {
+                    for (const key in currentMeal.nutrition) {
+                        acc[key] = (acc[key] || 0) + (parseFloat(currentMeal.nutrition[key]) || 0);
+                    }
+                    return acc;
+                }, {});
+
+                let newStatus = 'ปกติ';
+                if (newDailyTotals.calories > DAILY_NUTRIENT_LIMITS.calories * 1.1 ||
+                    newDailyTotals.protein > DAILY_NUTRIENT_LIMITS.protein * 1.5 ||
+                    newDailyTotals.totalFat > DAILY_NUTRIENT_LIMITS.totalFat * 1.5 ||
+                    newDailyTotals.sugars > DAILY_NUTRIENT_LIMITS.sugars * 1.5 ||
+                    newDailyTotals.sodium > DAILY_NUTRIENT_LIMITS.sodium * 1.5) {
+                    newStatus = 'ได้รับสารอาหารเกิน';
+                } else if (newDailyTotals.calories < DAILY_NUTRIENT_LIMITS.calories * 0.9 ||
+                           newDailyTotals.protein < DAILY_NUTRIENT_LIMITS.protein * 0.7 ||
+                           newDailyTotals.fiber < DAILY_NUTRIENT_LIMITS.fiber * 0.7) {
+                    newStatus = 'ได้รับสารอาหารน้อยเกินไป';
+                }
+
+                await setDoc(docRef, { meals: updatedMeals, dailyTotals: newDailyTotals, status: newStatus }, { merge: true });
+                appState.message = "เพิ่มอาหารเรียบร้อยแล้ว!";
+                appState.messageType = 'success';
+                appState.showAddMealModal = false;
+                appState.newMealName = '';
+                appState.searchedMealNutrition = null;
+            } catch (error) {
+                console.error("Error adding meal:", error);
+                appState.message = "เกิดข้อผิดพลาดในการเพิ่มอาหาร";
+                appState.messageType = 'error';
+            } finally {
+                updateUI();
+            }
+        };
+
+        const handleDeleteMeal = async (indexToDelete) => {
+            if (!appState.db || !appState.userId) {
+                appState.message = "ไม่สามารถลบได้: ผู้ใช้ไม่ได้เข้าสู่ระบบ";
+                appState.messageType = 'error';
+                updateUI();
+                return;
+            }
+            try {
+                const docRef = doc(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/foodLogs`, appState.selectedDate);
+                const updatedMeals = appState.dailyMeals.filter((_, index) => index !== indexToDelete);
+
+                const newDailyTotals = updatedMeals.reduce((acc, currentMeal) => {
+                    for (const key in currentMeal.nutrition) {
+                        acc[key] = (acc[key] || 0) + (parseFloat(currentMeal.nutrition[key]) || 0);
+                    }
+                    return acc;
+                }, {});
+
+                let newStatus = 'ปกติ';
+                if (newDailyTotals.calories > DAILY_NUTRIENT_LIMITS.calories * 1.1 ||
+                    newDailyTotals.protein > DAILY_NUTRIENT_LIMITS.protein * 1.5 ||
+                    newDailyTotals.totalFat > DAILY_NUTRIENT_LIMITS.totalFat * 1.5 ||
+                    newDailyTotals.sugars > DAILY_NUTRIENT_LIMITS.sugars * 1.5 ||
+                    newDailyTotals.sodium > DAILY_NUTRIENT_LIMITS.sodium * 1.5) {
+                    newStatus = 'ได้รับสารอาหารเกิน';
+                } else if (newDailyTotals.calories < DAILY_NUTRIENT_LIMITS.calories * 0.9 ||
+                           newDailyTotals.protein < DAILY_NUTRIENT_LIMITS.protein * 0.7 ||
+                           newDailyTotals.fiber < DAILY_NUTRIENT_LIMITS.fiber * 0.7) {
+                    newStatus = 'ได้รับสารอาหารน้อยเกินไป';
+                }
+
+                await setDoc(docRef, { meals: updatedMeals, dailyTotals: newDailyTotals, status: newStatus }, { merge: true });
+                appState.message = "ลบอาหารเรียบร้อยแล้ว!";
+                appState.messageType = 'success';
+            } catch (error) {
+                console.error("Error deleting meal:", error);
+                appState.message = "เกิดข้อผิดพลาดในการลบอาหาร";
+                appState.messageType = 'error';
+            } finally {
+                updateUI();
+            }
+        };
+
+        const calculateDailyNutrients = () => {
+            const totals = {};
+            for (const key in DAILY_NUTRIENT_LIMITS) {
+                totals[key] = 0;
+            }
+
+            appState.dailyMeals.forEach(meal => {
+                for (const key in meal.nutrition) {
+                    if (totals.hasOwnProperty(key)) {
+                        totals[key] += parseFloat(meal.nutrition[key] || 0);
+                    }
+                }
+            });
+            return totals;
+        };
+
+        const handleGenerateSuggestions = async () => {
+            appState.loadingSuggestions = true;
+            appState.message = '';
+            appState.messageType = 'info';
+            appState.suggestedMenus = [];
+            updateUI();
+
+            const prompt = `
+                โปรดแนะนำเมนูอาหารเช้า กลางวัน และเย็น พร้อมข้อมูลโภชนาการสำหรับแต่ละเมนู (พลังงาน, คาร์โบไฮเดรต, น้ำตาล, ไฟเบอร์, โปรตีน, ไขมันรวม, ไขมันอิ่มตัว, ไขมันไม่อิ่มตัว, คอเลสเตอรอล, โซเดียม, โพแทสเซียม, แคลเซียม, แมกนีเซียม) ในรูปแบบ JSON Array. แต่ละเมนูควรมีชื่อเมนู (recipeName) และรายการโภชนาการ (nutrition) โดยค่าโภชนาการเป็นตัวเลขเท่านั้น (ไม่ต้องมีหน่วย).
+                ตัวอย่างรูปแบบ JSON:
+                [
+                  {
+                    "recipeName": "ชื่อเมนู 1",
+                    "nutrition": {
+                      "calories": 350,
+                      "carbohydrates": 45,
+                      "sugars": 10,
+                      "fiber": 5,
+                      "protein": 20,
+                      "totalFat": 15,
+                      "saturatedFat": 5,
+                      "unsaturatedFat": 10,
+                      "cholesterol": 50,
+                      "sodium": 300,
+                      "potassium": 400,
+                      "calcium": 150,
+                      "magnesium": 50
+                    }
+                  },
+                  {
+                    "recipeName": "ชื่อเมนู 2",
+                    "nutrition": { ... }
+                  }
+                ]
+                ขอเมนูที่หลากหลายและสมดุลสำหรับคนทั่วไป.
+            `;
+
+            try {
+                const chatHistory = [];
+                chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+                const payload = {
+                    contents: chatHistory,
+                    generationConfig: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: "ARRAY",
+                            items: {
+                                type: "OBJECT",
+                                properties: {
+                                    "recipeName": { "type": "STRING" },
+                                    "nutrition": {
+                                        type: "OBJECT",
+                                        properties: {
+                                            "calories": { "type": "NUMBER" },
+                                            "carbohydrates": { "type": "NUMBER" },
+                                            "sugars": { "type": "NUMBER" },
+                                            "fiber": { "type": "NUMBER" },
+                                            "protein": { "type": "NUMBER" },
+                                            "totalFat": { "type": "NUMBER" },
+                                            "saturatedFat": { "type": "NUMBER" },
+                                            "unsaturatedFat": { "type": "NUMBER" },
+                                            "cholesterol": { "type": "NUMBER" },
+                                            "sodium": { "type": "NUMBER" },
+                                            "potassium": { "type": "NUMBER" },
+                                            "calcium": { "type": "NUMBER" },
+                                            "magnesium": { "type": "NUMBER" }
+                                        }
+                                    }
+                                },
+                                "propertyOrdering": ["recipeName", "nutrition"]
+                            }
+                        }
+                    }
+                };
+
+                const apiKey = "";
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    const jsonText = result.candidates[0].content.parts[0].text;
+                    const parsedJson = JSON.parse(jsonText);
+                    appState.suggestedMenus = parsedJson;
+                    appState.message = "สร้างข้อเสนอแนะเมนูเรียบร้อยแล้ว!";
+                    appState.messageType = 'success';
+                } else {
+                    appState.message = "ไม่สามารถสร้างข้อเสนอแนะเมนูได้";
+                    appState.messageType = 'error';
+                }
+            } catch (error) {
+                console.error("Error generating menu suggestions:", error);
+                appState.message = "เกิดข้อผิดพลาดในการสร้างข้อเสนอแนะเมนู";
+                appState.messageType = 'error';
+            } finally {
+                appState.loadingSuggestions = false;
+                updateUI();
+            }
+        };
+
+        const handleSearchNutrition = async () => {
+            if (!appState.newMealName.trim()) {
+                appState.message = "กรุณาป้อนชื่ออาหารเพื่อค้นหาข้อมูลโภชนาการ";
+                appState.messageType = 'warning';
+                updateUI();
+                return;
+            }
+            appState.isSearchingNutrition = true;
+            appState.searchedMealNutrition = null;
+            appState.message = 'กำลังค้นหาข้อมูลโภชนาการ...';
+            appState.messageType = 'info';
+            updateUI();
+
+            const prompt = `
+                โปรดให้ข้อมูลโภชนาการสำหรับ "${appState.newMealName}" ในรูปแบบ JSON Object.
+                ข้อมูลที่ต้องการ: พลังงาน (calories), คาร์โบไฮเดรต (carbohydrates), น้ำตาล (sugars), ไฟเบอร์ (fiber), โปรตีน (protein), ไขมันรวม (totalFat), ไขมันอิ่มตัว (saturatedFat), ไขมันไม่อิ่มตัว (unsaturatedFat), คอเลสเตอรอล (cholesterol), โซเดียม (sodium), โพแทสเซียม (potassium), แคลเซียม (calcium), แมกนีเซียม (magnesium).
+                ค่าโภชนาการเป็นตัวเลขเท่านั้น (ไม่ต้องมีหน่วย). หากไม่พบข้อมูล ให้ระบุเป็น null.
+                ตัวอย่างรูปแบบ JSON:
+                {
+                  "calories": 350,
+                  "carbohydrates": 45,
+                  "sugars": 10,
+                  "fiber": 5,
+                  "protein": 20,
+                  "totalFat": 15,
+                  "saturatedFat": 5,
+                  "unsaturatedFat": 10,
+                  "cholesterol": 50,
+                  "sodium": 300,
+                  "potassium": 400,
+                  "calcium": 150,
+                  "magnesium": 50
+                }
+            `;
+
+            try {
+                const chatHistory = [];
+                chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+                const payload = {
+                    contents: chatHistory,
+                    generationConfig: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: "OBJECT",
+                            properties: {
+                                "calories": { "type": ["number", "null"] },
+                                "carbohydrates": { "type": ["number", "null"] },
+                                "sugars": { "type": ["number", "null"] },
+                                "fiber": { "type": ["number", "null"] },
+                                "protein": { "type": ["number", "null"] },
+                                "totalFat": { "type": ["number", "null"] },
+                                "saturatedFat": { "type": ["number", "null"] },
+                                "unsaturatedFat": { "type": ["number", "null"] },
+                                "cholesterol": { "type": ["number", "null"] },
+                                "sodium": { "type": ["number", "null"] },
+                                "potassium": { "type": ["number", "null"] },
+                                "calcium": { "type": ["number", "null"] },
+                                "magnesium": { "type": ["number", "null"] }
+                            }
+                        }
+                    }
+                };
+
+                const apiKey = "";
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    const jsonText = result.candidates[0].content.parts[0].text;
+                    const parsedData = JSON.parse(jsonText);
+                    appState.searchedMealNutrition = parsedData;
+                    appState.message = `พบข้อมูลโภชนาการสำหรับ "${appState.newMealName}"`;
+                    appState.messageType = 'success';
+                } else {
+                    appState.message = `ไม่พบข้อมูลโภชนาการสำหรับ "${appState.newMealName}"`;
+                    appState.messageType = 'warning';
+                }
+            } catch (error) {
+                console.error("Error searching nutrition:", error);
+                appState.message = "เกิดข้อผิดพลาดในการค้นหาข้อมูลโภชนาการ";
+                appState.messageType = 'error';
+            } finally {
+                appState.isSearchingNutrition = false;
+                updateUI();
+            }
+        };
+
+        const handleManualAddMealWithSearchedData = () => {
+            if (!appState.newMealName || !appState.searchedMealNutrition) {
+                appState.message = "กรุณาป้อนชื่ออาหารและค้นหาข้อมูลโภชนาการก่อน";
+                appState.messageType = 'warning';
+                updateUI();
+                return;
+            }
+            const meal = {
+                recipeName: appState.newMealName,
+                nutrition: appState.searchedMealNutrition,
+                source: 'manual_searched'
+            };
+            handleAddMeal(meal); // This will also update UI
+        };
+
+        const handleShowNutritionDetail = (meal) => {
+            appState.selectedMealForDetail = meal;
+            appState.showNutritionDetailModal = true;
+            updateUI();
+        };
+
+        const handleShowDayDetails = (log) => {
+            appState.selectedDayDetails = log;
+            updateUI();
+        };
+
+        // Mock data for historical food logs - only populate if collection is empty
+        const mockFoodLogsData = [
+            {
+              date: formatDate(new Date(Date.now() - 0 * 24 * 60 * 60 * 1000)), // Today
+              meals: [
+                { recipeName: 'ข้าวผัดกะเพราไก่', nutrition: { calories: 450, carbohydrates: 50, sugars: 5, fiber: 3, protein: 30, totalFat: 20, saturatedFat: 8, unsaturatedFat: 12, cholesterol: 80, sodium: 800, potassium: 300, calcium: 50, magnesium: 40 } },
+                { recipeName: 'ส้มตำไทย', nutrition: { calories: 250, carbohydrates: 30, sugars: 15, fiber: 5, protein: 5, totalFat: 10, saturatedFat: 2, unsaturatedFat: 8, cholesterol: 10, sodium: 1200, potassium: 400, calcium: 80, magnesium: 60 } },
+                { recipeName: 'แกงเขียวหวานไก่', nutrition: { calories: 380, carbohydrates: 25, sugars: 8, fiber: 2, protein: 25, totalFat: 25, saturatedFat: 15, unsaturatedFat: 10, cholesterol: 70, sodium: 900, potassium: 350, calcium: 70, magnesium: 50 } },
+              ],
+            },
+            {
+              date: formatDate(new Date(Date.now() - 1 * 24 * 60 * 60 * 1000)), // Yesterday
+              meals: [
+                { recipeName: 'โจ๊กหมู', nutrition: { calories: 300, carbohydrates: 40, sugars: 2, fiber: 1, protein: 15, totalFat: 10, saturatedFat: 3, unsaturatedFat: 7, cholesterol: 40, sodium: 600, potassium: 200, calcium: 30, magnesium: 20 } },
+                { recipeName: 'ผัดไทยกุ้งสด', nutrition: { calories: 550, carbohydrates: 60, sugars: 20, fiber: 4, protein: 25, totalFat: 25, saturatedFat: 10, unsaturatedFat: 15, cholesterol: 150, sodium: 1500, potassium: 500, calcium: 100, magnesium: 70 } },
+              ],
+            },
+            {
+              date: formatDate(new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)),
+              meals: [
+                { recipeName: 'ข้าวไข่เจียว', nutrition: { calories: 350, carbohydrates: 30, sugars: 1, fiber: 0, protein: 15, totalFat: 20, saturatedFat: 7, unsaturatedFat: 13, cholesterol: 200, sodium: 400, potassium: 150, calcium: 20, magnesium: 15 } },
+                { recipeName: 'ก๋วยเตี๋ยวเรือ', nutrition: { calories: 400, carbohydrates: 45, sugars: 5, fiber: 2, protein: 20, totalFat: 18, saturatedFat: 6, unsaturatedFat: 12, cholesterol: 60, sodium: 1000, potassium: 300, calcium: 40, magnesium: 30 } },
+              ],
+            },
+            {
+              date: formatDate(new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)),
+              meals: [
+                { recipeName: 'สุกี้น้ำ', nutrition: { calories: 320, carbohydrates: 20, sugars: 3, fiber: 4, protein: 30, totalFat: 15, saturatedFat: 5, unsaturatedFat: 10, cholesterol: 50, sodium: 700, potassium: 450, calcium: 120, magnesium: 80 } },
+              ],
+            },
+              {
+              date: formatDate(new Date(Date.now() - 4 * 24 * 60 * 60 * 1000)),
+              meals: [
+                { recipeName: 'ข้าวผัด', nutrition: { calories: 480, carbohydrates: 55, sugars: 7, fiber: 2, protein: 25, totalFat: 22, saturatedFat: 9, unsaturatedFat: 13, cholesterol: 90, sodium: 850, potassium: 320, calcium: 60, magnesium: 45 } },
+                { recipeName: 'ต้มยำกุ้ง', nutrition: { calories: 200, carbohydrates: 15, sugars: 5, fiber: 1, protein: 18, totalFat: 10, saturatedFat: 3, unsaturatedFat: 7, cholesterol: 100, sodium: 1100, potassium: 280, calcium: 50, magnesium: 35 } },
+              ],
+            },
+            {
+              date: formatDate(new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)),
+              meals: [
+                { recipeName: 'ผัดซีอิ๊ว', nutrition: { calories: 600, carbohydrates: 70, sugars: 10, fiber: 3, protein: 20, totalFat: 30, saturatedFat: 12, unsaturatedFat: 18, cholesterol: 120, sodium: 1400, potassium: 400, calcium: 80, magnesium: 55 } },
+              ],
+            },
+            {
+              date: formatDate(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)),
+              meals: [
+                { recipeName: 'แกงส้ม', nutrition: { calories: 280, carbohydrates: 20, sugars: 8, fiber: 5, protein: 22, totalFat: 12, saturatedFat: 4, unsaturatedFat: 8, cholesterol: 60, sodium: 950, potassium: 500, calcium: 100, magnesium: 70 } },
+                { recipeName: 'ขนมจีนน้ำยา', nutrition: { calories: 420, carbohydrates: 50, sugars: 6, fiber: 4, protein: 18, totalFat: 20, saturatedFat: 8, unsaturatedFat: 12, cholesterol: 70, sodium: 1300, potassium: 380, calcium: 70, magnesium: 50 } },
+              ],
+            },
+        ];
+
+        // --- Firebase Initialization and Listeners ---
+        window.onload = async () => {
+            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+            const app = initializeApp(firebaseConfig);
+            appState.db = getFirestore(app);
+            appState.auth = getAuth(app);
+
+            onAuthStateChanged(appState.auth, async (user) => {
+                if (user) {
+                    appState.userId = user.uid;
+                } else {
+                    if (appState.initialAuthToken) {
+                        try {
+                            await signInWithCustomToken(appState.auth, appState.initialAuthToken);
+                            appState.userId = appState.auth.currentUser.uid;
+                        } catch (error) {
+                            console.error("Error signing in with custom token:", error);
+                            await signInAnonymously(appState.auth);
+                            appState.userId = appState.auth.currentUser.uid;
+                        }
+                    } else {
+                        await signInAnonymously(appState.auth);
+                        appState.userId = appState.auth.currentUser.uid;
+                    }
+                }
+                appState.isLoading = false;
+                document.getElementById('loadingApp').classList.add('hidden'); // Hide initial loading
+                updateUI(); // Initial render of the app
+
+                // Set up real-time listeners for data after auth is ready
+                setupFirestoreListeners();
+                handleGenerateSuggestions(); // Auto-generate suggestions on load
+            });
+
+            // Attach global navigation listeners
+            document.getElementById('navProfile').onclick = () => { appState.currentPage = 'profile'; updateUI(); };
+            document.getElementById('navBloodTest').onclick = () => { appState.currentPage = 'bloodTest'; updateUI(); };
+            document.getElementById('navFoodTracking').onclick = () => { appState.currentPage = 'foodTracking'; updateUI(); };
+            document.getElementById('navHistory').onclick = () => { appState.currentPage = 'history'; updateUI(); };
+            document.getElementById('upgradePremiumBtn').onclick = () => { appState.isPremium = true; updateUI(); };
+        };
+
+        const setupFirestoreListeners = () => {
+            // Profile Listener
+            const profileDocRef = doc(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/profile`, 'userProfile');
+            onSnapshot(profileDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    appState.profile = docSnap.data();
+                    appState.isEditing = false;
+                } else {
+                    appState.profile = { height: '', weight: '', gender: '' };
+                    appState.isEditing = true;
+                }
+                appState.isLoading = false; // Profile page specific loading
+                if (appState.currentPage === 'profile') updateUI();
+            }, (error) => {
+                console.error("Error fetching profile:", error);
+                appState.message = "เกิดข้อผิดพลาดในการโหลดโปรไฟล์";
+                appState.messageType = 'error';
+                appState.isLoading = false;
+                if (appState.currentPage === 'profile') updateUI();
+            });
+
+            // Blood Test Listener for selected date
+            const bloodTestDocRef = doc(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/bloodTests`, appState.selectedDate);
+            onSnapshot(bloodTestDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    appState.bloodTests = docSnap.data();
+                } else {
+                    appState.bloodTests = {};
+                }
+                appState.isLoading = false; // Blood test page specific loading
+                if (appState.currentPage === 'bloodTest') updateUI();
+            }, (error) => {
+                console.error("Error fetching blood tests:", error);
+                appState.message = "เกิดข้อผิดพลาดในการโหลดผลเลือด";
+                appState.messageType = 'error';
+                appState.isLoading = false;
+                if (appState.currentPage === 'bloodTest') updateUI();
+            });
+
+            // Food Logs Listener (for current day)
+            const foodLogDocRef = doc(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/foodLogs`, appState.selectedDate);
+            onSnapshot(foodLogDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    appState.dailyMeals = docSnap.data().meals || [];
+                } else {
+                    appState.dailyMeals = [];
+                }
+                appState.isLoadingDailyMeals = false;
+                if (appState.currentPage === 'foodTracking') updateUI();
+            }, (error) => {
+                console.error("Error fetching daily meals:", error);
+                appState.message = "เกิดข้อผิดพลาดในการโหลดข้อมูลอาหาร";
+                appState.messageType = 'error';
+                appState.isLoadingDailyMeals = false;
+                if (appState.currentPage === 'foodTracking') updateUI();
+            });
+
+            // Food Logs History Listener (for all logs)
+            const foodLogsCollectionRef = collection(appState.db, `artifacts/${appState.appId}/users/${appState.userId}/foodLogs`);
+            onSnapshot(foodLogsCollectionRef, async (snapshot) => {
+                const logs = [];
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    const date = doc.id;
+                    logs.push({
+                        date: date,
+                        meals: data.meals || [],
+                        dailyTotals: data.dailyTotals || {},
+                        status: data.status || 'ปกติ',
+                    });
+                });
+                logs.sort((a, b) => new Date(b.date) - new Date(a.date));
+                appState.foodLogs = logs;
+                appState.isLoading = false; // History page specific loading
+                if (appState.currentPage === 'history') updateUI();
+
+                // Populate mock data if collection is empty
+                if (snapshot.empty && appState.userId) {
+                    appState.message = 'กำลังเพิ่มข้อมูลตัวอย่างประวัติอาหาร...';
+                    appState.messageType = 'info';
+                    updateUI();
+                    for (const log of mockFoodLogsData) {
+                        const dailyTotals = log.meals.reduce((acc, meal) => {
+                            for (const key in meal.nutrition) {
+                                acc[key] = (acc[key] || 0) + (parseFloat(meal.nutrition[key]) || 0);
+                            }
+                            return acc;
+                        }, {});
+
+                        let status = 'ปกติ';
+                        if (dailyTotals.calories > DAILY_NUTRIENT_LIMITS.calories * 1.1 ||
+                            dailyTotals.protein > DAILY_NUTRIENT_LIMITS.protein * 1.5 ||
+                            dailyTotals.totalFat > DAILY_NUTRIENT_LIMITS.totalFat * 1.5 ||
+                            dailyTotals.sugars > DAILY_NUTRIENT_LIMITS.sugars * 1.5 ||
+                            dailyTotals.sodium > DAILY_NUTRIENT_LIMITS.sodium * 1.5) {
+                          status = 'ได้รับสารอาหารเกิน';
+                        } else if (dailyTotals.calories < DAILY_NUTRIENT_LIMITS.calories * 0.9 ||
+                                   dailyTotals.protein < DAILY_NUTRIENT_LIMITS.protein * 0.7 ||
+                                   dailyTotals.fiber < DAILY_NUTRIENT_LIMITS.fiber * 0.7) {
+                          status = 'ได้รับสารอาหารน้อยเกินไป';
+                        }
+                        await setDoc(doc(foodLogsCollectionRef, log.date), {
+                            meals: log.meals,
+                            dailyTotals: dailyTotals,
+                            status: status
+                        });
+                    }
+                    appState.message = 'เพิ่มข้อมูลตัวอย่างประวัติอาหารเรียบร้อยแล้ว!';
+                    appState.messageType = 'success';
+                    updateUI();
+                }
+            }, (error) => {
+                console.error("Error fetching food logs history:", error);
+                appState.message = "เกิดข้อผิดพลาดในการโหลดประวัติอาหาร";
+                appState.messageType = 'error';
+                appState.isLoading = false;
+                if (appState.currentPage === 'history') updateUI();
+            });
+        };
+    </script>
+</body>
+</html>
